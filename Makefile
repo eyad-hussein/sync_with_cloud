@@ -5,11 +5,11 @@ BINARY_NAME=sync_with_cloud
 BINARY_PATH=$(BINARY_DIR)/$(BINARY_NAME)
 MAIN=cmd/main.go
 
-build:
-	@go build -o $(BINARY_PATH) $(MAIN)
-
 run: build
 	@$(BINARY_PATH)
+
+build:
+	@go build -o $(BINARY_PATH) $(MAIN)
 
 lint: fmt
 	@golangci-lint run
