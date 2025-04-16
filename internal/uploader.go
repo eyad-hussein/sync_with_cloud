@@ -3,22 +3,23 @@ package internal
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
 )
 
 type UploaderOpts struct {
-	localPaths  []string
-	remotePaths []string
-	authClient  *AuthClient
+	remoteRootFolderID string
+	pathsToUpdate      map[string]string
+	authClient         *AuthClient
 }
 
-func NewUploaderOpts(localPaths, remotePaths []string, authClient AuthClient) UploaderOpts {
+func NewUploaderOpts(remoteRootFolderID string, pathsToUpdate map[string]string, authClient AuthClient) UploaderOpts {
 	return UploaderOpts{
-		localPaths:  localPaths,
-		remotePaths: remotePaths,
-		authClient:  &authClient,
+		remoteRootFolderID: remoteRootFolderID,
+		pathsToUpdate:      pathsToUpdate,
+		authClient:         &authClient,
 	}
 }
 
@@ -42,24 +43,42 @@ func (u *Uploader) Upload() error {
 		return err
 	}
 
-	query := "mimeType='application/vnd.google-apps.folder' and trashed=false"
+	var currentParentID string
+	for key, val := range u.opts.pathsToUpdate {
+		fmt.Println(key)
 
-	r, err := srv.Files.List().
-		Q(query).
-		PageSize(100). // Adjust page size as needed
-		Fields("nextPageToken, files(id, name)").
-		Do()
-	if err != nil {
-		return err
-	}
+		pathSegments := strings.Split(val, "/")
 
-	if len(r.Files) == 0 {
-		fmt.Println("No files found")
-	}
+		currentParentID = u.opts.remoteRootFolderID
 
-	for _, i := range r.Files {
-		fmt.Println(i.Name + " " + i.Id)
+		for _, segment := range pathSegments {
+
+			fmt.Println(segment)
+			query := fmt.Sprintf("name = '%s' and (mimeType = 'application/vnd.google-apps.folder' or mimeType != 'application/vnd.google-apps.folder') and '%s' in parents", segment, currentParentID)
+
+			fmt.Println(query)
+			r, err := srv.Files.List().Q(query).Do()
+
+			if err != nil {
+				return err
+			}
+
+			if len(r.Files) == 0 {
+				return fmt.Errorf("No folders")
+			}
+
+			currentParentID = r.Files[0].Id
+			fmt.Printf("Found folder '%s' with ID '%s' Count: %d Kind: %s\n,", r.Files[0].Name, r.Files[0].Id, len(r.Files), r.Files[0].MimeType)
+		}
 	}
 
 	return nil
+}
+
+func (u *Uploader) updateFile() {
+
+}
+
+func (u *Uploader) updateFolder() {
+
 }

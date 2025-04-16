@@ -29,3 +29,6 @@ bin
 
 # gcp service account credentials
 service-account-credentials.json
+
+# just scratching
+temp.*
