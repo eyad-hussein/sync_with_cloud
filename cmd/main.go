@@ -34,7 +34,8 @@ func main() {
 		remoteRootFolderID,
 		map[string]string{
 			"/media/watashi-2/watashi-ubuntu/testing": "watashi-ubuntu",
-			// "/media/watashi-2/text.txt":       "watashi-ubuntu/not-found-dir1/not-found-dir2/not-found",
+			// "/media/watashi-2/text.txt": "watashi-ubuntu/not-found-dir1/not-found-dir2/not-found",
+			// "/media/watashi-2/watashi-ubuntu/text.txt": "watashi-ubuntu/not-found-dir1/not-found-dir2/not-found",
 		},
 		*internal.NewAuthClient(serviceAccountCredentialsPath),
 	)

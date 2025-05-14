@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"mime"
 	"os"
 	"path/filepath"
@@ -37,12 +38,12 @@ func NewUploader(opts UploaderOpts) *Uploader {
 	return &Uploader{opts: &opts}
 }
 
-// Make sure this is invoked once
+// TODO:: Make sure this is invoked once
 func (u *Uploader) InitUploader() error {
 	// check if every localPath actually exists(validate)
 	for localPath, _ := range u.opts.pathsToUpdate {
 		if _, err := os.Stat(localPath); errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("path %s does not exist in locally", localPath)
+			return fmt.Errorf("folder/file %s does not exist in locally", localPath)
 		}
 	}
 
@@ -66,18 +67,18 @@ func (u *Uploader) InitUploader() error {
 func (u *Uploader) Upload() (err error) {
 	var currentParentID string
 	for localPath, remotePath := range u.opts.pathsToUpdate {
-		fmt.Println("localPath = " + localPath)
+		slog.Info("scanning localPath", "path", localPath)
 
 		pathSegments := strings.Split(remotePath, "/")
 		currentParentID = u.opts.remoteRootFolderID
 		var pathSegmentsItr int
-
 		var exists bool
+
 		for idx, segment := range pathSegments {
-			fmt.Println("segment = " + segment)
 			pathSegmentsItr = idx
 
-			exists, err = u.search(segment, &currentParentID)
+			var fileID string
+			exists, fileID, err = u.search(segment, currentParentID)
 			if err != nil {
 				return fmt.Errorf("something happened while performing search %w", err)
 			}
@@ -85,6 +86,7 @@ func (u *Uploader) Upload() (err error) {
 			if !exists {
 				break
 			}
+			currentParentID = fileID
 		}
 
 		f, err := os.Open(localPath)
@@ -99,27 +101,20 @@ func (u *Uploader) Upload() (err error) {
 		}
 
 		if !exists {
-			fmt.Printf("file/folder does not exist\n")
+			slog.Info("file/folder does not exist remotely")
 
-			err := u.createEmptyDirs(pathSegments, pathSegmentsItr, &currentParentID)
+			// We need to save the current parent ID before creating empty dirs
+			parentID := currentParentID
+			err := u.createEmptyDirs(pathSegments, pathSegmentsItr, &parentID)
 			if err != nil {
 				return err
 			}
+			currentParentID = parentID
 
 			if fInfo.IsDir() {
-				// check if folder exists, if not, create Folder, else, just update.
-				folderExists, err := u.search(filepath.Base(f.Name()), &currentParentID)
+				err := u.createFolder(f, currentParentID)
 				if err != nil {
 					return err
-				}
-
-				if folderExists {
-
-				} else {
-					err := u.createFolder(f, currentParentID)
-					if err != nil {
-						return err
-					}
 				}
 				continue
 			}
@@ -137,27 +132,35 @@ func (u *Uploader) Upload() (err error) {
 		}
 
 		if fInfo.IsDir() {
-			// check if folder exists, if not, create Folder, else, just update.
-			folderExists, err := u.search(filepath.Base(f.Name()), &currentParentID)
+			exists, currentParentID, err := u.search(filepath.Base(f.Name()), currentParentID)
 			if err != nil {
 				return err
 			}
 
-			if folderExists {
-
-			} else {
+			if !exists {
 				err := u.createFolder(f, currentParentID)
 				if err != nil {
 					return err
 				}
+
+				fmt.Println("Folder created successfully")
+				continue
+			}
+
+			err = u.updateFolder(f, currentParentID)
+			if err != nil {
+				return err
 			}
 			continue
 		}
 
-		prevParentID := currentParentID
-		remoteFile := u.convertLocalToRemoteFile(f)
+		_, remoteFileId, err := u.search(filepath.Base(f.Name()), currentParentID)
+		if err != nil {
+			return err
+		}
 
-		updatedFile, err := u.updateFile(currentParentID, prevParentID, remoteFile, f)
+		remoteFile := u.convertLocalToRemoteFile(f)
+		updatedFile, err := u.updateFile(remoteFileId, currentParentID, remoteFile, f)
 		if err != nil {
 			return err
 		}
@@ -168,26 +171,21 @@ func (u *Uploader) Upload() (err error) {
 	return nil
 }
 
-func (u *Uploader) search(segment string, currentParentID *string) (bool, error) {
-	fmt.Println("query = " + segment)
-	query := fmt.Sprintf("name = '%s' and (mimeType = 'application/vnd.google-apps.folder' or mimeType != 'application/vnd.google-apps.folder') and '%s' in parents", segment, *currentParentID)
+func (u *Uploader) search(query string, currentParentID string) (bool, string, error) {
+	slog.Info("searching in gdrive", "query", query)
+	formattedQuery := fmt.Sprintf("name = '%s' and (mimeType = 'application/vnd.google-apps.folder' or mimeType != 'application/vnd.google-apps.folder') and '%s' in parents", query, currentParentID)
 
-	fmt.Println(query)
-	r, err := u.opts.srv.Files.List().Q(query).Do()
-
+	r, err := u.opts.srv.Files.List().Q(formattedQuery).Do()
 	if err != nil {
-		return false, err
+		return false, "", fmt.Errorf("failed to search: %w", err)
 	}
 
 	if len(r.Files) == 0 {
-		return false, nil
+		return false, "", nil
 	}
 
-	*currentParentID = r.Files[0].Id
-
-	fmt.Printf("Found folder '%s' with ID '%s' Count: %d Kind: %s\n", r.Files[0].Name, r.Files[0].Id, len(r.Files), r.Files[0].MimeType)
-
-	return true, nil
+	slog.Info("folder/file is found", "name", r.Files[0].Name, "ID", r.Files[0].Id)
+	return true, r.Files[0].Id, nil
 }
 
 func (u *Uploader) createEmptyDirs(pathSegments []string, startIdx int, currentParentID *string) error {
@@ -240,10 +238,9 @@ func (u *Uploader) createFolder(folder *os.File, currentParentID string) error {
 		return fmt.Errorf("failed to create root folder: %w", err)
 	}
 
-	folderIDs[folder.Name()] = createdRoot.Id
-	fmt.Printf("Created root directory: %s\n", folder.Name())
-
 	root := folder.Name()
+	folderIDs[root] = createdRoot.Id
+
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -269,7 +266,6 @@ func (u *Uploader) createFolder(folder *os.File, currentParentID string) error {
 			}
 
 			folderIDs[path] = createdFolder.Id
-			fmt.Printf("Directory: %s\n", path)
 		} else {
 			file, err := os.Open(path)
 			if err != nil {
@@ -283,12 +279,42 @@ func (u *Uploader) createFolder(folder *os.File, currentParentID string) error {
 			if err != nil {
 				return err
 			}
-
-			fmt.Printf("File: %s\n", path)
 		}
 
 		return nil
 	})
+}
+
+func (u *Uploader) buildRemoteFolderStructure(remoteFileMap map[[2]string]*drive.File, parentId string) error {
+	if remoteFileMap == nil {
+		remoteFileMap = make(map[[2]string]*drive.File)
+	}
+
+	query := fmt.Sprintf("'%s' in parents", parentId)
+
+	r, err := u.opts.srv.Files.List().
+		Q(query).
+		Fields("files(id, name, mimeType, size, modifiedTime)").
+		Do()
+
+	if err != nil {
+		return err
+	}
+
+	for _, file := range r.Files {
+		key := [2]string{parentId, file.Name}
+		remoteFileMap[key] = file
+
+		slog.Info("added to map", "remoteFile", file.Name, "mimeType", file.MimeType)
+
+		if file.MimeType == "application/vnd.google-apps.folder" {
+			if err := u.buildRemoteFolderStructure(remoteFileMap, file.Id); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func (u *Uploader) convertLocalToRemoteFile(file *os.File) *drive.File {
@@ -303,4 +329,117 @@ func (u *Uploader) convertLocalToRemoteFile(file *os.File) *drive.File {
 		Name:     filename,
 		MimeType: mimeType,
 	}
+}
+
+func (u *Uploader) updateFolder(localFolder *os.File, currentParentID string) error {
+	remoteFileMap := make(map[[2]string]*drive.File)
+	err := u.buildRemoteFolderStructure(remoteFileMap, currentParentID)
+	if err != nil {
+		return err
+	}
+
+	processedFiles := make(map[[2]string]bool)
+
+	root := localFolder.Name()
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if path == root {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+
+		parentPath := filepath.Dir(path)
+		var parentID string
+
+		if parentPath == "." || parentPath == root {
+			parentID = currentParentID
+		} else {
+			exists, id, err := u.search(filepath.Base(parentPath), currentParentID)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return fmt.Errorf("parent folder not found: %s", parentPath)
+			}
+			parentID = id
+		}
+
+		key := [2]string{parentID, filepath.Base(path)}
+		remoteFile, exists := remoteFileMap[key]
+
+		if d.IsDir() {
+			if !exists {
+				slog.Info("creating directory", "path", relPath)
+				folder := &drive.File{
+					Name:     filepath.Base(path),
+					MimeType: "application/vnd.google-apps.folder",
+					Parents:  []string{parentID},
+				}
+
+				created, err := u.opts.srv.Files.Create(folder).Do()
+				if err != nil {
+					return fmt.Errorf("failed to create folder %s: %w", relPath, err)
+				}
+
+				remoteFileMap[key] = created
+			}
+		} else {
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+
+			if !exists {
+				slog.Info("creating file", "path", relPath)
+
+				remoteFile := u.convertLocalToRemoteFile(file)
+				remoteFile.Parents = []string{parentID}
+
+				_, err = u.createFile(remoteFile, file)
+				if err != nil {
+					return err
+				}
+			} else {
+				slog.Info("updating file", "path", relPath, "id", remoteFile.Id)
+
+				_, err := file.Stat()
+				if err != nil {
+					return err
+				}
+
+				newFile := u.convertLocalToRemoteFile(file)
+				_, err = u.updateFile(remoteFile.Id, parentID, newFile, file)
+				if err != nil {
+					return err
+				}
+			}
+		}
+
+		processedFiles[key] = true
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	for key, remoteFile := range remoteFileMap {
+		if !processedFiles[key] {
+			slog.Info("deleting remote file", "name", remoteFile.Name)
+			err := u.opts.srv.Files.Delete(remoteFile.Id).Do()
+			if err != nil {
+				slog.Error("failed to delete file", "name", remoteFile.Name, "error", err)
+			}
+		}
+	}
+
+	return nil
 }
