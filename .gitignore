@@ -34,3 +34,5 @@ service-account-credentials.json
 temp.*
 
 drive-sync.yaml
+
+.pre-commit-config.yaml

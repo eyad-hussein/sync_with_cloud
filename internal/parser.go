@@ -27,15 +27,15 @@ func (c *Config) ValidateConfig() error {
 		return fmt.Errorf("no paths specified for syncing")
 	}
 
-	for localPath, _ := range c.Paths {
+	for localPath := range c.Paths {
 		if _, err := os.Stat(localPath); errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("folder/file %s does not exist locally", localPath)
 		}
 	}
 
-	for excludePath, _ := range c.Exclude {
+	for excludePath := range c.Exclude {
 		isUnderIncludedPath := false
-		for includedPath, _ := range c.Paths {
+		for includedPath := range c.Paths {
 			if strings.HasPrefix(excludePath, includedPath) {
 				isUnderIncludedPath = true
 				break

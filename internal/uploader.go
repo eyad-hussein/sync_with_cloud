@@ -91,7 +91,11 @@ func (u *Uploader) Upload() (err error) {
 		if err != nil {
 			return fmt.Errorf("failed to open file located in %s: %w", localPath, err)
 		}
-		defer f.Close()
+		defer func() {
+			if closeErr := f.Close(); closeErr != nil && err == nil {
+				err = closeErr
+			}
+		}()
 
 		fInfo, err := f.Stat()
 		if err != nil {
@@ -280,7 +284,11 @@ func (u *Uploader) createFolder(folder *os.File, currentParentID string) error {
 			if err != nil {
 				return err
 			}
-			defer file.Close()
+			defer func() {
+				if closeErr := file.Close(); closeErr != nil && err == nil {
+					err = closeErr
+				}
+			}()
 
 			remoteFile := u.convertLocalToRemoteFile(file)
 			remoteFile.Parents = []string{parentID}
@@ -412,7 +420,11 @@ func (u *Uploader) updateFolder(localFolder *os.File, currentParentID string) er
 			if err != nil {
 				return err
 			}
-			defer file.Close()
+			defer func() {
+				if closeErr := file.Close(); closeErr != nil && err == nil {
+					err = closeErr
+				}
+			}()
 
 			if !exists {
 				slog.Info("creating file", "path", relPath)
