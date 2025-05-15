@@ -32,3 +32,5 @@ service-account-credentials.json
 
 # just scratching
 temp.*
+
+drive-sync.yaml

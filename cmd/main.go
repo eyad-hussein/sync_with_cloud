@@ -5,39 +5,24 @@ import (
 	"os"
 
 	"github.com/eyad-hussein/sync_with_cloud/internal"
-	"github.com/joho/godotenv"
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
 
-	// f, err := os.Open("/media/watashi-2/watashi-ubuntu")
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	// defer f.Close()
-
-	// ff, err := f.Stat()
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-
-	// fmt.Println(ff.IsDir())
-	// return
-	if err := godotenv.Load(); err != nil {
+	cgfFile, err := os.ReadFile("drive-sync.yaml")
+	if err != nil {
 		log.Fatalln(err)
 	}
 
-	serviceAccountCredentialsPath := os.Getenv("SERVICE_ACCOUNT_CREDENTIALS_PATH")
-	remoteRootFolderID := os.Getenv("REMOTE_ROOT_FOLDER_ID")
+	var cfg internal.Config
+	if err := yaml.Unmarshal(cgfFile, &cfg); err != nil {
+		log.Fatalln(err)
+	}
 
 	opts := internal.NewUploaderOpts(
-		remoteRootFolderID,
-		map[string]string{
-			"/media/watashi-2/watashi-ubuntu/testing": "watashi-ubuntu",
-			// "/media/watashi-2/text.txt": "watashi-ubuntu/not-found-dir1/not-found-dir2/not-found",
-			// "/media/watashi-2/watashi-ubuntu/text.txt": "watashi-ubuntu/not-found-dir1/not-found-dir2/not-found",
-		},
-		*internal.NewAuthClient(serviceAccountCredentialsPath),
+		cfg,
+		*internal.NewAuthClient(cfg.CredentialsFile),
 	)
 
 	uploader := internal.NewUploader(opts)

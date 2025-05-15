@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -16,17 +15,15 @@ import (
 )
 
 type UploaderOpts struct {
-	remoteRootFolderID string
-	pathsToUpdate      map[string]string
-	authClient         *AuthClient
-	srv                *drive.Service
+	cfg        Config
+	authClient *AuthClient
+	srv        *drive.Service
 }
 
-func NewUploaderOpts(remoteRootFolderID string, pathsToUpdate map[string]string, authClient AuthClient) UploaderOpts {
+func NewUploaderOpts(cfg Config, authClient AuthClient) UploaderOpts {
 	return UploaderOpts{
-		remoteRootFolderID: remoteRootFolderID,
-		pathsToUpdate:      pathsToUpdate,
-		authClient:         &authClient,
+		cfg:        cfg,
+		authClient: &authClient,
 	}
 }
 
@@ -40,20 +37,16 @@ func NewUploader(opts UploaderOpts) *Uploader {
 
 // TODO:: Make sure this is invoked once
 func (u *Uploader) InitUploader() error {
-	// check if every localPath actually exists(validate)
-	for localPath, _ := range u.opts.pathsToUpdate {
-		if _, err := os.Stat(localPath); errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("folder/file %s does not exist in locally", localPath)
-		}
+
+	if err := u.opts.cfg.ValidateConfig(); err != nil {
+		return err
 	}
 
-	// init the auth client
 	auth, err := u.opts.authClient.GetAuthClient()
 	if err != nil {
 		return err
 	}
 
-	// init the drive service
 	srv, err := drive.NewService(context.Background(), option.WithHTTPClient(auth))
 	if err != nil {
 		return err
@@ -66,11 +59,16 @@ func (u *Uploader) InitUploader() error {
 
 func (u *Uploader) Upload() (err error) {
 	var currentParentID string
-	for localPath, remotePath := range u.opts.pathsToUpdate {
+	for localPath, remotePath := range u.opts.cfg.Paths {
 		slog.Info("scanning localPath", "path", localPath)
 
+		if _, exists := u.opts.cfg.Exclude[localPath]; exists {
+			slog.Info("found localPath in exclude section, skipping", "localPath", localPath)
+			continue
+		}
+
 		pathSegments := strings.Split(remotePath, "/")
-		currentParentID = u.opts.remoteRootFolderID
+		currentParentID = u.opts.cfg.RootFolderId
 		var pathSegmentsItr int
 		var exists bool
 
@@ -103,7 +101,6 @@ func (u *Uploader) Upload() (err error) {
 		if !exists {
 			slog.Info("file/folder does not exist remotely")
 
-			// We need to save the current parent ID before creating empty dirs
 			parentID := currentParentID
 			err := u.createEmptyDirs(pathSegments, pathSegmentsItr, &parentID)
 			if err != nil {
@@ -112,6 +109,7 @@ func (u *Uploader) Upload() (err error) {
 			currentParentID = parentID
 
 			if fInfo.IsDir() {
+
 				err := u.createFolder(f, currentParentID)
 				if err != nil {
 					return err
@@ -132,12 +130,14 @@ func (u *Uploader) Upload() (err error) {
 		}
 
 		if fInfo.IsDir() {
-			exists, currentParentID, err := u.search(filepath.Base(f.Name()), currentParentID)
+			exists, newCurrentParentID, err := u.search(filepath.Base(f.Name()), currentParentID)
 			if err != nil {
 				return err
 			}
 
 			if !exists {
+				slog.Info("currentParentId", "parentId", currentParentID)
+
 				err := u.createFolder(f, currentParentID)
 				if err != nil {
 					return err
@@ -147,7 +147,7 @@ func (u *Uploader) Upload() (err error) {
 				continue
 			}
 
-			err = u.updateFolder(f, currentParentID)
+			err = u.updateFolder(f, newCurrentParentID)
 			if err != nil {
 				return err
 			}
@@ -250,6 +250,15 @@ func (u *Uploader) createFolder(folder *os.File, currentParentID string) error {
 			return nil
 		}
 
+		slog.Info("msg", "path", path)
+		if _, excluded := u.opts.cfg.Exclude[path]; excluded {
+			slog.Info("skipping excluded path during folder creation", "path", path)
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		parentDir := filepath.Dir(path)
 		parentID := folderIDs[parentDir]
 
@@ -347,6 +356,14 @@ func (u *Uploader) updateFolder(localFolder *os.File, currentParentID string) er
 		}
 
 		if path == root {
+			return nil
+		}
+
+		if _, excluded := u.opts.cfg.Exclude[path]; excluded {
+			slog.Info("skipping excluded path during folder update", "path", path)
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
