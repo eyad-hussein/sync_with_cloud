@@ -357,6 +357,40 @@ func (u *Uploader) updateFolder(localFolder *os.File, currentParentID string) er
 
 	processedFiles := make(map[[2]string]bool)
 
+	resolveParentID := func(targetPath, rootPath string) (string, error) {
+		if targetPath == rootPath {
+			return currentParentID, nil
+		}
+
+		relPath, err := filepath.Rel(rootPath, targetPath)
+		if err != nil {
+			return "", err
+		}
+
+		segments := strings.Split(relPath, string(filepath.Separator))
+		if len(segments) == 0 {
+			return currentParentID, nil
+		}
+
+		parentID := currentParentID
+		for _, segment := range segments {
+			if segment == "." || segment == "" {
+				continue
+			}
+
+			exists, id, err := u.search(segment, parentID)
+			if err != nil {
+				return "", err
+			}
+			if !exists {
+				return "", fmt.Errorf("folder not found in hierarchy: %s (full path: %s)", segment, targetPath)
+			}
+			parentID = id
+		}
+
+		return parentID, nil
+	}
+
 	root := localFolder.Name()
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -386,14 +420,11 @@ func (u *Uploader) updateFolder(localFolder *os.File, currentParentID string) er
 		if parentPath == "." || parentPath == root {
 			parentID = currentParentID
 		} else {
-			exists, id, err := u.search(filepath.Base(parentPath), currentParentID)
+			// Use the new resolver function
+			parentID, err = resolveParentID(parentPath, root)
 			if err != nil {
 				return err
 			}
-			if !exists {
-				return fmt.Errorf("parent folder not found: %s", parentPath)
-			}
-			parentID = id
 		}
 
 		key := [2]string{parentID, filepath.Base(path)}
